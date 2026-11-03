@@ -11,11 +11,13 @@
 #define WIFI_RECONNECT_INTERVAL 10000
 
 // ===== MQTT Configuration =====
-#define MQTT_BROKER "192.168.1.100"
+#define MQTT_BROKER "app.coreiot.io"
 #define MQTT_PORT 1883
 #define MQTT_CLIENT_ID "esp32-4848s040"
-#define MQTT_USER ""
-#define MQTT_PASSWORD ""
+#define MQTT_TOKEN "2t4ju2jyc80ohnqwiax1"
+#define COREIOT_TELEMETRY "v1/devices/me/telemetry"
+#define COREIOT_ATTRIBUTES "v1/devices/me/attributes"
+#define COREIOT_RPC_REQUEST "v1/devices/me/rpc/request/+"
 #define MQTT_KEEPALIVE 60
 #define MQTT_RECONNECT_INTERVAL 5000
 
