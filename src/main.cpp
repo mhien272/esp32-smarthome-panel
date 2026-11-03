@@ -49,8 +49,7 @@ uint32_t g_bootTime = 0;
 storage::Config g_sdConfig;  // /config.json, read once in setup()
 char g_mqttHost[64] = MQTT_BROKER;
 uint16_t g_mqttPort = MQTT_PORT;
-char g_mqttUser[32] = MQTT_USER;
-char g_mqttPass[64] = MQTT_PASSWORD;
+char g_mqttToken[64] = MQTT_TOKEN;
 
 // ===================== messages =====================
 
@@ -227,7 +226,7 @@ void publishState() {
     }
     String out;
     serializeJson(doc, out);
-    g_mqtt.publish(MQTT_TOPIC_STATE, out.c_str(), true);
+    g_mqtt.publish("v1/devices/me/telemetry", out.c_str());
 }
 
 void setupOTA() {
@@ -246,8 +245,7 @@ void maintainMqtt(uint32_t now) {
     if (lastTry && now - lastTry < retryDelay) return;
     lastTry = now;
     String id = String(MQTT_CLIENT_ID) + "-" + String(random(0xffff), HEX);
-    if (g_mqtt.connect(id.c_str(), g_mqttUser[0] ? g_mqttUser : nullptr, g_mqttPass[0] ? g_mqttPass : nullptr,
-                       MQTT_TOPIC_AVAILABILITY, 1, true, "offline")) {
+    if (g_mqtt.connect(id.c_str(), g_mqttToken, "")) {
         storage::logEvent("MQTT connected to %s:%u", g_mqttHost, g_mqttPort);
         g_mqtt.subscribe(MQTT_TOPIC_COMMAND);
         g_mqtt.subscribe(MQTT_TOPIC_CONFIG);
@@ -294,7 +292,7 @@ void feedHmiStatus(uint32_t now) {
     strlcpy(info.mqttHost, g_mqttHost, sizeof(info.mqttHost));
     info.mqttPort = g_mqttPort;
     info.mqttState = g_mqtt.state();
-    info.mqttAuth = g_mqttUser[0] != 0;
+    info.mqttAuth = g_mqttToken[0] != 0;
 
     const uint32_t heap = ESP.getFreeHeap();
     if (heap < g_minFreeHeap) g_minFreeHeap = heap;
@@ -547,8 +545,7 @@ void setup() {
     if (storage::loadConfig(g_sdConfig)) {
         if (g_sdConfig.mqttHost[0]) strlcpy(g_mqttHost, g_sdConfig.mqttHost, sizeof(g_mqttHost));
         if (g_sdConfig.mqttPort) g_mqttPort = g_sdConfig.mqttPort;
-        if (g_sdConfig.mqttUser[0]) strlcpy(g_mqttUser, g_sdConfig.mqttUser, sizeof(g_mqttUser));
-        if (g_sdConfig.mqttPass[0]) strlcpy(g_mqttPass, g_sdConfig.mqttPass, sizeof(g_mqttPass));
+        //if (g_sdConfig.mqttToken[0]) strlcpy(g_mqttToken, g_sdConfig.mqttUser, sizeof(g_mqttToken));
         hmi::setRoomName(g_sdConfig.room);
     }
 
