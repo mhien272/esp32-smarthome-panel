@@ -43,6 +43,9 @@ const uint8_t kRelayPins[RELAY_COUNT] = {RELAY_PIN_1, RELAY_PIN_2, RELAY_PIN_3};
 std::atomic<bool> g_relay[RELAY_COUNT];       // written by app, read by net (MQTT state)
 std::atomic<uint32_t> g_relayChange[RELAY_COUNT];
 std::atomic<bool> g_publishPending{false};    // app -> net: publish MQTT state
+std::atomic<float> g_temperature{0.0f};
+std::atomic<float> g_humidity{0.0f};
+std::atomic<bool> g_sensorReady{false};
 std::atomic<uint32_t> g_minFreeHeap{UINT32_MAX};
 uint32_t g_bootTime = 0;
 
@@ -105,6 +108,21 @@ void pushSensors(const SensorValues& s, hmi::SensorState state) {
         storage::logSensors(s.primary, s.metric1, s.metric2);
     }
     if (state == hmi::SensorState::Ok && !s.primaryError) datalog::addSample(s.primary, s.metric1, s.metric2);
+
+    if (state == hmi::SensorState::Ok && !s.primaryError) {
+        g_temperature.store(s.primary);
+        g_humidity.store(s.metric1);
+        g_sensorReady.store(true);
+
+        // Gửi dữ liệu lên CoreIoT tối đa khoảng 10 giây/lần
+        static uint32_t lastPublish = 0;
+        uint32_t now = millis();
+
+        if (lastPublish == 0 || now - lastPublish >= 10000) {
+            lastPublish = now;
+            g_publishPending = true;
+        }
+}
 }
 
 void appTask(void*) {
@@ -177,6 +195,103 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     JsonDocument doc;
     if (deserializeJson(doc, payload, length)) return;
 
+    // Nhận lệnh RPC từ CoreIoT
+    const char* rpcPrefix = "v1/devices/me/rpc/request/";
+    const size_t prefixLen = strlen(rpcPrefix);
+
+    if (strncmp(topic, rpcPrefix, prefixLen) == 0 &&
+        topic[prefixLen] != '\0') {
+
+        const char* method = doc["method"] | "";
+
+        
+        
+        if (strcmp(method, "getRelay") == 0) {
+            int relay = 1;  // Mặc định Relay 1
+
+            if (doc["params"].is<JsonObject>()) {
+                relay = doc["params"]["relay"] | 1;
+            }
+
+            if (relay < 1 || relay > RELAY_COUNT) {
+                Serial.println("RPC getRelay: invalid relay");
+                return;
+            }
+
+            bool state = g_relay[relay - 1].load();
+
+            String responseTopic =
+                String("v1/devices/me/rpc/response/") +
+                String(topic + prefixLen);
+
+            g_mqtt.publish(
+                responseTopic.c_str(),
+                state ? "true" : "false"
+            );
+
+            Serial.printf(
+                "RPC getRelay %d = %s\n",
+                relay,
+                state ? "ON" : "OFF"
+            );
+
+            return;
+        }
+
+
+
+        if (strcmp(method, "setRelay") != 0) {
+            Serial.println("RPC: unsupported method");
+            return;
+        }
+
+        JsonVariant params = doc["params"];
+        if (!params["relay"].is<int>() ||
+            !params["state"].is<bool>()) {
+            Serial.println("RPC: invalid params");
+            return;
+        }
+
+        int relay = params["relay"].as<int>();
+        bool state = params["state"].as<bool>();
+
+        // CoreIoT dùng relay 1, 2, 3
+        // Firmware dùng index 0, 1, 2
+        if (relay < 1 || relay > RELAY_COUNT) {
+            Serial.println("RPC: invalid relay");
+            return;
+        }
+
+        AppMsg cmd{};
+        cmd.cmd = AppCmd::RelaySet;
+        cmd.index = static_cast<uint8_t>(relay - 1);
+        cmd.flag = state;
+
+        bool accepted =
+            xQueueSend(g_appQ, &cmd, 0) == pdTRUE;
+
+        // Phản hồi lệnh RPC hai chiều
+        String responseTopic =
+            String("v1/devices/me/rpc/response/") +
+            String(topic + prefixLen);
+
+        g_mqtt.publish(
+            responseTopic.c_str(),
+            accepted
+                ? "{\"accepted\":true}"
+                : "{\"accepted\":false}"
+        );
+
+        Serial.printf(
+            "RPC relay %d -> %s, accepted=%d\n",
+            relay,
+            state ? "ON" : "OFF",
+            accepted
+        );
+
+        return;
+    }
+
     AppMsg m{};
     if (strcmp(topic, MQTT_TOPIC_SENSOR) == 0) {
         // {"primary":26.4,"metric1":62,"metric2":412}  or  {"error":true}
@@ -217,6 +332,9 @@ void publishState() {
     doc["min_free_heap"] = g_minFreeHeap.load();
     doc["wifi_rssi"] = WiFi.RSSI();
     doc["ip"] = WiFi.localIP().toString();
+    doc["relay1"] = g_relay[0].load();
+    doc["relay2"] = g_relay[1].load();
+    doc["relay3"] = g_relay[2].load();
     JsonArray relays = doc["relays"].to<JsonArray>();
     for (int i = 0; i < RELAY_COUNT; i++) {
         JsonObject r = relays.add<JsonObject>();
@@ -224,6 +342,12 @@ void publishState() {
         r["state"] = g_relay[i].load();
         r["last_change"] = (millis() - g_relayChange[i]) / 1000;
     }
+
+    if (g_sensorReady.load()) {
+        doc["temperature"] = g_temperature.load();
+        doc["humidity"] = g_humidity.load();
+    }
+    
     String out;
     serializeJson(doc, out);
     g_mqtt.publish("v1/devices/me/telemetry", out.c_str());
@@ -251,6 +375,7 @@ void maintainMqtt(uint32_t now) {
         g_mqtt.subscribe(MQTT_TOPIC_CONFIG);
         g_mqtt.subscribe(MQTT_TOPIC_SENSOR);
         g_mqtt.publish(MQTT_TOPIC_AVAILABILITY, "online", true);
+        g_mqtt.subscribe("v1/devices/me/rpc/request/+");
         publishState();
         retryDelay = MQTT_RECONNECT_INTERVAL;
     } else {
