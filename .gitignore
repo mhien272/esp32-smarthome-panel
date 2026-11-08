@@ -38,3 +38,5 @@ Thumbs.db
 include/config_local.h
 *.pem
 *.key
+
+include/secrets.h

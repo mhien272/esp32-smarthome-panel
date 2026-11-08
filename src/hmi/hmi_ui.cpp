@@ -1,6 +1,12 @@
 // LVGL widgets for the 480x480 HMI.  Layout values follow the "Pixel specs"
 // board of the design canvas; page content sits in y 64..392 between the
 // persistent header and bottom navigation.
+#include <lvgl.h>
+extern "C" {
+    extern const lv_image_dsc_t aircon;
+    extern const lv_image_dsc_t light;
+    extern const lv_image_dsc_t outlet;
+}
 
 #include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
@@ -55,9 +61,12 @@ struct Ui {
     lv_obj_t* metric[2];
     int32_t shown = 0;  // primary value ×10 currently drawn
     // control
+    // control
+    lv_obj_t* relayCard[RELAY_COUNT];
     lv_obj_t* relayIcon[RELAY_COUNT];
     lv_obj_t* relayStatus[RELAY_COUNT];
-    lv_obj_t* relaySwitch[RELAY_COUNT];
+    lv_obj_t* relayPill[RELAY_COUNT];
+    lv_obj_t* relayDot[RELAY_COUNT];
     lv_obj_t* devStatus[kMaxDevices];
     lv_obj_t* devRow[kMaxDevices][kMaxChannels];
     lv_obj_t* devIcon[kMaxDevices][kMaxChannels];
@@ -603,19 +612,96 @@ lv_obj_t* switchRow(lv_obj_t* card, const char* icon, const char* name, bool las
 void buildControl(lv_obj_t* page) {
     makeScrollPage(page);
 
-    sectionTitle(page, "RELAY TRÊN PANEL");
-    lv_obj_t* local = settingsCard(page);
-    for (int i = 0; i < RELAY_COUNT; i++) {
-        lv_obj_t* r = switchRow(local, kRelayIcons[i], kRelayNames[i], i == RELAY_COUNT - 1,
-                                &ui.relayIcon[i], &ui.relayStatus[i], &ui.relaySwitch[i]);
-        lv_obj_add_event_cb(r, [](lv_event_t* e) {
-            const auto idx = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
-            if (ui.cb.relayToggle) ui.cb.relayToggle(idx);
-        }, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<uintptr_t>(i)));
+    // Tiêu đề riêng của tab Điều khiển
+    lv_obj_t* heading = box(page);
+    lv_obj_set_size(heading, 448, 54);
+    lv_obj_set_style_pad_all(heading, 0, 0);
+
+    // Tạo khoảng cách với card máy lạnh
+    lv_obj_set_style_margin_bottom(heading, 6, 0);
+
+    // Icon Smart Devices
+    lv_obj_t* headingIcon = label(
+        heading,
+        &hmi_icons_20,
+        lv_color_hex(0xC69BFF),
+        ICON_SLIDERS
+    );
+
+    lv_obj_set_pos(headingIcon, 6, 14);
+
+    // Phóng icon lên 140%
+    lv_obj_set_style_transform_scale(headingIcon, 358, 0);
+
+    // Tiêu đề Smart Devices
+    lv_obj_t* headingTitle = label(
+        heading,
+        &hmi_font_20_m,
+        lv_color_hex(0xC69BFF),
+        "Smart Devices"
+    );
+
+    lv_obj_set_pos(headingTitle, 46, 12);
+
+    // Phóng chữ lên 125%
+    lv_obj_set_style_transform_scale(headingTitle, 320, 0);
+
+    
+    lv_obj_t* cluster = box(page);
+    lv_obj_set_size(cluster, 448, 304);
+
+    lv_obj_set_style_pad_all(cluster, 0, 0);
+    lv_obj_remove_flag(cluster, LV_OBJ_FLAG_SCROLLABLE);
+
+    const int order[3] = {1, 0, 2};
+
+    for (int n = 0; n < 3; n++) {
+        int i = order[n];
+        bool top = (n == 0);
+
+        lv_obj_t* c = cardObj(cluster);
+        ui.relayCard[i] = c;
+
+        lv_obj_set_pos(c, n == 2 ? 228 : 0, top ? 0 : 156);
+        lv_obj_set_size(c, top ? 448 : 220, 148);
+
+        lv_obj_set_style_radius(c, 20, 0);
+        lv_obj_set_style_bg_color(c, lv_color_hex(0x292B3D), 0);
+        lv_obj_set_style_border_width(c, 2, 0);
+        lv_obj_set_style_border_color(c, lv_color_hex(0x414255), 0);
+
+        // Chọn icon theo relay
+        const lv_image_dsc_t* iconSrc =
+            (i == 1) ? &aircon :
+            (i == 0) ? &light :
+                    &outlet;
+
+        // Tạo icon
+        lv_obj_t* img = lv_image_create(c);
+        lv_image_set_src(img, iconSrc);
+
+        // Phóng to icon
+        lv_image_set_scale(img, i == 1 ? 320 : 384);
+
+        // Căn giữa card
+        lv_obj_center(img);
+
+        // Không để icon chặn thao tác nhấn
+        lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
+
+        // Không còn dùng icon dạng label và status text nữa
+        ui.relayIcon[i] = nullptr;
+        ui.relayStatus[i] = nullptr;
+
+        makeClickable(c);
+        lv_obj_add_event_cb(c, [](lv_event_t* e) {
+            int index = (int)(uintptr_t)lv_event_get_user_data(e);
+            if (ui.cb.relayToggle) ui.cb.relayToggle(index);
+        }, LV_EVENT_CLICKED, (void*)(uintptr_t)i);
     }
 
     // One group per Tasmota device: title + online state, then its channels.
-    for (uint8_t d = 0; d < s_snap.deviceCount; d++) {
+    /*for (uint8_t d = 0; d < s_snap.deviceCount; d++) {
         const DeviceInfo& dev = s_snap.devices[d];
         lv_obj_t* head = box(page);
         lv_obj_set_size(head, LV_PCT(100), LV_SIZE_CONTENT);
@@ -642,17 +728,27 @@ void buildControl(lv_obj_t* page) {
                 if (ui.cb.deviceToggle) ui.cb.deviceToggle(v >> 4, v & 0x0F);
             }, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<uintptr_t>((d << 4) | c)));
         }
-    }
+    }*/
 }
 
 void applyRelays(const Model& m) {
     for (int i = 0; i < RELAY_COUNT; i++) {
         const bool on = m.relay[i];
-        setChecked(ui.relaySwitch[i], on);
-        // Each device lights up in its own colour when on, grey when off.
-        const lv_color_t onColor[RELAY_COUNT] = {lamp(), info(), success()};  // per palette
-        lv_obj_set_style_text_color(ui.relayIcon[i], on ? onColor[i] : muted(), 0);
-        lv_label_set_text_fmt(ui.relayStatus[i], "%s · Kênh %d", on ? "Đang bật" : "Đã tắt", i + 1);
+        lv_obj_t* card = ui.relayCard[i];
+
+        // Màu nền: OFF xám tối, ON tím
+        lv_obj_set_style_bg_color(
+            card,
+            lv_color_hex(on ? 0x55417F : 0x292B3D),
+            0
+        );
+
+        // Màu viền: ON tím sáng, OFF xám
+        lv_obj_set_style_border_color(
+            card,
+            lv_color_hex(on ? 0xAE8CFF : 0x414255),
+            0
+        );
     }
 }
 
@@ -3030,7 +3126,7 @@ void tick() {
     if (d & D_STORAGE) applyStorage(m);
     if (d & D_UPDATE) applyUpdate(m);
     if (d & D_ROOM) lv_label_set_text(ui.name, m.room);
-    if (d & D_DEVICES) applyDevices(m);
+    //if (d & D_DEVICES) applyDevices(m);
     // Memory, history and events refresh themselves (liveMemory / liveData).
     const bool selfRefresh = ui.detailTopic == T_MEMORY || ui.detailTopic == T_HISTORY || ui.detailTopic == T_EVENTS;
     if ((d & (D_SYSTEM | D_STORAGE | D_LINK | D_CLOCK)) && ui.current == P_DETAIL && !selfRefresh) applyDetail(m);

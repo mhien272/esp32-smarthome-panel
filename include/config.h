@@ -14,7 +14,8 @@
 #define MQTT_BROKER "app.coreiot.io"
 #define MQTT_PORT 1883
 #define MQTT_CLIENT_ID "esp32-4848s040"
-#define MQTT_TOKEN "2t4ju2jyc80ohnqwiax1"
+#include "secrets.h"
+#define MQTT_TOKEN COREIOT_ACCESS_TOKEN
 #define COREIOT_TELEMETRY "v1/devices/me/telemetry"
 #define COREIOT_ATTRIBUTES "v1/devices/me/attributes"
 #define COREIOT_RPC_REQUEST "v1/devices/me/rpc/request/+"
