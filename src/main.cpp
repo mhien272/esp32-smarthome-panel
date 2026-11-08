@@ -30,6 +30,7 @@
 #include "storage.h"
 #include "tasmota.h"
 #include "wifi_manager.h"
+#include "espnow/espnow_manager.h"
 
 // Touch is read through LGFX (Touch_GT911 on I2C_NUM_1).  Do not also start
 // Wire on GPIO19/45 - two drivers on the same pins corrupt touch reads.
@@ -55,8 +56,17 @@ uint16_t g_mqttPort = MQTT_PORT;
 char g_mqttToken[64] = MQTT_TOKEN;
 
 // ===================== messages =====================
-
-enum class AppCmd : uint8_t { RelayToggle, RelaySet, Sensors, SensorPreview, SaveBrightness, SaveAutoDim, SaveTheme };
+enum class AppCmd : uint8_t {
+    RelayToggle,
+    RelaySet,
+    EspNowLightToggle,
+    EspNowLightConfirmed,
+    Sensors,
+    SensorPreview,
+    SaveBrightness,
+    SaveAutoDim,
+    SaveTheme
+};
 struct AppMsg {
     AppCmd cmd;
     uint8_t index;
@@ -65,7 +75,11 @@ struct AppMsg {
     char text[12];
 };
 
-enum class NetCmd : uint8_t { Scan, Join };
+enum class NetCmd : uint8_t {
+    Scan,
+    Join,
+    EspNowLightToggle
+};
 struct NetMsg {
     NetCmd cmd;
     char ssid[33];
@@ -135,7 +149,26 @@ void appTask(void*) {
         AppMsg m;
         datalog::tick();  // close finished history slots (10 s / 1 min)
         if (xQueueReceive(g_appQ, &m, pdMS_TO_TICKS(100)) == pdTRUE) {
-            switch (m.cmd) {
+            switch (m.cmd) {    
+                case AppCmd::EspNowLightConfirmed:
+                // Chỉ cập nhật model giao diện sau ACK hợp lệ.
+                // Không điều khiển GPIO relay vật lý.
+                hmi::setRelay(0, m.flag);
+
+                Serial.printf(
+                    "[ESP-NOW] Light UI confirmed: %s\n",
+                    m.flag ? "ON" : "OFF"
+                );
+                break;
+                case AppCmd::EspNowLightToggle: {
+                    NetMsg msg{};
+                    msg.cmd = NetCmd::EspNowLightToggle;
+
+                    if (xQueueSend(g_netQ, &msg, 0) != pdTRUE) {
+                        Serial.println("[ESP-NOW] Net queue full");
+                    }
+                    break;
+                }
                 case AppCmd::RelayToggle:
                     if (m.index < RELAY_COUNT) setRelay(m.index, !g_relay[m.index]);
                     break;
@@ -189,6 +222,7 @@ void appTask(void*) {
 
 WiFiClient g_wifiClient;
 PubSubClient g_mqtt(g_wifiClient);
+bool g_espnowLightDesired = false;
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.printf("MQTT [%s]: %.*s\n", topic, length, (const char*)payload);
@@ -459,21 +493,87 @@ void netTask(void*) {
     wifimgr::begin(g_sdConfig);
 
     bool wasUp = false, otaStarted = false;
+    Serial.println("[ESP-NOW] Waiting for Wi-Fi channel information");
     for (;;) {
-        NetMsg m;
+        NetMsg m;  
         if (xQueueReceive(g_netQ, &m, pdMS_TO_TICKS(20)) == pdTRUE) {
-            if (m.cmd == NetCmd::Scan) wifimgr::startScan();
-            else wifimgr::join(m.ssid, m.pass);
+            if (m.cmd == NetCmd::Scan) {
+                wifimgr::startScan();
+            }
+            else if (m.cmd == NetCmd::Join) {
+                wifimgr::join(m.ssid, m.pass);
+            }
+            else if (m.cmd == NetCmd::EspNowLightToggle) {
+                constexpr int LIGHT_SLAVE_ID = 6;
+
+                // Đọc trạng thái hiện tại của Slave
+                EspNowManager::DeviceInfo info{};
+
+                if (!EspNowManager::getDeviceInfo(
+                        LIGHT_SLAVE_ID, info)) {
+                    Serial.println(
+                        "[ESP-NOW] Light Slave not found"
+                    );
+                }
+                else if (info.status ==
+                        EspNowManager::DeviceStatus::PENDING) {
+                    Serial.println(
+                        "[ESP-NOW] Light command still pending"
+                    );
+                }
+                else {
+                    // Nếu đã có ACK, dùng trạng thái xác nhận.
+                    // Nếu chưa có ACK, dùng trạng thái yêu cầu trước đó.
+                    bool currentState =
+                        (info.status ==
+                         EspNowManager::DeviceStatus::ONLINE)
+                            ? info.state
+                            : g_espnowLightDesired;
+
+                    bool nextState = !currentState;
+
+                    if (EspNowManager::sendCommand(
+                            LIGHT_SLAVE_ID, nextState)) {
+
+                        g_espnowLightDesired = nextState;
+
+                        Serial.printf(
+                            "[ESP-NOW] Light requested: %s\n",
+                            nextState ? "ON" : "OFF"
+                        );
+                    }
+                    else {
+                        Serial.println(
+                            "[ESP-NOW] Light command rejected"
+                        );
+                    }
+                }
+            }
         }
         const uint32_t now = millis();
         wifimgr::loop();
 
         const bool up = wifimgr::connected();
+        
+        static bool espnowReady = false;
+
+        if (up && !espnowReady) {
+            if (EspNowManager::begin()) {
+                espnowReady = true;
+                Serial.println("[ESP-NOW] Initialized successfully");
+            }
+        }
+
         if (up != wasUp) {
             wasUp = up;
             if (up) {
                 storage::logEvent("Wi-Fi connected: %s %s RSSI %d", WiFi.SSID().c_str(),
                                   WiFi.localIP().toString().c_str(), WiFi.RSSI());
+                Serial.printf(
+                    "[ESP-NOW] Wi-Fi connected | Channel: %d | MAC: %s\n",
+                    WiFi.channel(),
+                    WiFi.macAddress().c_str()
+                );         
                 configTime(HMI_TZ_OFFSET_SECONDS, 0, "pool.ntp.org", "time.google.com");
                 if (!otaStarted) {
                     setupOTA();
@@ -486,8 +586,46 @@ void netTask(void*) {
         maintainMqtt(now);
         g_mqtt.loop();
         if (g_publishPending.exchange(false)) publishState();
-        if (otaStarted) ArduinoOTA.handle();
+        if (otaStarted) ArduinoOTA.handle();     
         feedHmiStatus(now);
+
+        if (espnowReady) {
+            EspNowManager::update();
+
+            // Theo dõi ACK của Slave 6
+            static EspNowManager::DeviceStatus lastStatus =
+                EspNowManager::DeviceStatus::IDLE;
+
+            static bool lastConfirmedState = false;
+
+            EspNowManager::DeviceInfo info{};
+
+            if (EspNowManager::getDeviceInfo(6, info)) {
+
+                // Chỉ cập nhật UI sau khi nhận ACK hợp lệ
+                if (info.status == EspNowManager::DeviceStatus::ONLINE &&
+                    (lastStatus != EspNowManager::DeviceStatus::ONLINE ||
+                     info.state != lastConfirmedState)) {
+
+                    AppMsg msg{};
+                    msg.cmd = AppCmd::EspNowLightConfirmed;
+                    msg.flag = info.state;
+
+                    if (xQueueSend(g_appQ, &msg, 0) == pdTRUE) {
+                        Serial.printf(
+                            "[ESP-NOW] Sending confirmed state to UI: %s\n",
+                            info.state ? "ON" : "OFF"
+                        );
+
+                        lastConfirmedState = info.state;
+                    } else {
+                        Serial.println("[ESP-NOW] App queue full");
+                    }
+                }
+
+                lastStatus = info.status;
+            }
+        }
     }
 }
 
@@ -561,7 +699,42 @@ void consoleTask(void*) {
             } else if (strncmp(line, "kbd", 3) == 0) {  // "kbd" secured, "kbd open" open network
                 hmi::previewKeyboard(strstr(line, "open") != nullptr);
             } else if (strcmp(line, "devices") == 0) {
-                tasmota::print(Serial);
+                tasmota::print(Serial);      
+            } else if (strncmp(line, "espnow ", 7) == 0) {
+                int id = 0;
+                char action[8] = {};
+                char extra = '\0';
+
+                if (sscanf(
+                        line + 7,
+                        "%d %7s %c",
+                        &id,
+                        action,
+                        &extra
+                    ) != 2) {
+                    Serial.println("Usage: espnow 6 ON / espnow 6 OFF");
+                }
+                else {
+                    bool on = false;
+                    bool valid = true;
+
+                    if (strcmp(action, "ON") == 0) {
+                        on = true;
+                    }
+                    else if (strcmp(action, "OFF") == 0) {
+                        on = false;
+                    }
+                    else {
+                        valid = false;
+                    }
+
+                    if (!valid) {
+                        Serial.println("Enter ON or OFF");
+                    }
+                    else if (!EspNowManager::sendCommand(id, on)) {
+                        Serial.println("[ESP-NOW] Command rejected");
+                    }
+                }
             } else if (strncmp(line, "wifi 11b ", 9) == 0) {
                 wifimgr::retry11b(line + 9);
             } else if (strncmp(line, "wifi mac ", 9) == 0) {  // "wifi mac <ssid>": retry with another MAC
@@ -596,8 +769,21 @@ void consoleTask(void*) {
 }
 
 // ===================== HMI callbacks (run in the ui task: post only) =====================
-
-void onRelayToggle(uint8_t i) { postApp(AppMsg{AppCmd::RelayToggle, i, false, {}, {}}); }
+void onRelayToggle(uint8_t i) {
+    if (i == 0) {
+        // Light: chuẩn bị điều khiển Slave 6
+        postApp(AppMsg{
+            AppCmd::EspNowLightToggle,
+            i, false, {}, {}
+        });
+    } else {
+        // Aircon và Outlet: giữ nguyên chức năng hiện tại
+        postApp(AppMsg{
+            AppCmd::RelayToggle,
+            i, false, {}, {}
+        });
+    }
+}
 void onBrightnessChanged(uint8_t pct) { postApp(AppMsg{AppCmd::SaveBrightness, pct, false, {}, {}}); }
 void onAutoDimChanged(bool on) { postApp(AppMsg{AppCmd::SaveAutoDim, 0, on, {}, {}}); }
 void onThemeChanged(uint8_t i) { postApp(AppMsg{AppCmd::SaveTheme, i, false, {}, {}}); }
