@@ -205,12 +205,7 @@ void appTask(void*) {
                 case AppCmd::SaveAutoDim: g_prefs.putBool("autodim", m.flag); break;
                 case AppCmd::SaveTheme: g_prefs.putUChar("theme", m.index); break;
                 case AppCmd::FaceDetected: {
-                    Serial.printf(
-                        "[APP] Face event: person=%s, recognized=%d, score=%.3f\n",
-                        m.text,
-                        m.flag,
-                        m.v[0]
-                    );
+                    hmi::setFaceDetection(m.text, m.flag, m.v[0]);
                     break;
                 }
             }

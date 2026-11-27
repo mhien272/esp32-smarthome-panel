@@ -3190,16 +3190,15 @@ void tick() {
     const Model& m = s_snap;
     if (d & D_PRIMARY) applyPrimary(m);
     if (d & D_METRICS) applyMetrics(m);
-    if (d & D_FACE) applyFaceDetection(m);
-    // Tự ẩn thông báo sau 10 giây
+    if (d & D_FACE) {
+        applyFaceDetection(m);
+    }
+    // Tự ẩn sau 10 giây kể từ sự kiện cuối
     if (ui.faceCard &&
         !lv_obj_has_flag(ui.faceCard, LV_OBJ_FLAG_HIDDEN) &&
         (uint32_t)(millis() - m.face.detectedAt) >= 10000u) {
 
-        lv_obj_add_flag(
-            ui.faceCard,
-            LV_OBJ_FLAG_HIDDEN
-        );
+        lv_obj_add_flag(ui.faceCard, LV_OBJ_FLAG_HIDDEN);
     }
     if (d & D_LINK) applyLink(m);
     if (d & D_CLOCK) {
