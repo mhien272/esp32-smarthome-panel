@@ -26,6 +26,7 @@ enum Dirty : uint32_t {
     D_DEVICES = 1u << 14,
     D_FILES = 1u << 15,
     D_FILEVIEW = 1u << 16,
+    D_FACE = 1u << 17,
     D_ALL = 0xFFFFFFFFu,
 };
 
@@ -33,7 +34,12 @@ struct Metric {
     float value = 0;
     SensorState state = SensorState::Loading;
 };
-
+struct FaceInfo {
+    char person[32] = "";
+    bool recognized = false;
+    float score = 0.0f;
+    uint32_t detectedAt = 0;
+};
 struct Model {
     Metric primary;
     Metric metric[2];
@@ -60,6 +66,7 @@ struct Model {
     SystemInfo sys;
     FileList files;
     FileView view;
+    FaceInfo face;
     uint32_t dirty = D_ALL;
 };
 

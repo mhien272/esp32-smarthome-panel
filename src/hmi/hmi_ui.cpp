@@ -36,6 +36,10 @@ constexpr uint8_t kNavCount = 3;  // P_WIFI is a sub-page of Settings
 
 struct Ui {
     Callbacks cb;
+    // FaceDetection notification
+    lv_obj_t* faceCard = nullptr;
+    lv_obj_t* faceName = nullptr;
+    lv_obj_t* faceScore = nullptr;
     // header
     lv_obj_t* header;  // logo, room, status, clock: Tổng quan only
     lv_obj_t* name;
@@ -348,6 +352,60 @@ void buildNav(lv_obj_t* scr) {
     setChecked(ui.navBtn[0], true);
 }
 
+void buildFaceNotification(lv_obj_t* scr) {
+    // Thẻ thông báo nằm trên màn hình chính
+    ui.faceCard = box(scr);
+
+    lv_obj_set_size(ui.faceCard, 416, 96);
+    lv_obj_align(ui.faceCard, LV_ALIGN_TOP_MID, 0, 76);
+
+    // Màu nền và viền
+    lv_obj_set_style_bg_color(ui.faceCard, surface(), 0);
+    lv_obj_set_style_bg_opa(ui.faceCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(ui.faceCard, 16, 0);
+
+    lv_obj_set_style_border_width(ui.faceCard, 2, 0);
+    lv_obj_set_style_border_color(ui.faceCard, accent(), 0);
+
+    lv_obj_set_style_pad_all(ui.faceCard, 16, 0);
+
+    // Không chặn cảm ứng phía dưới
+    lv_obj_remove_flag(ui.faceCard, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(ui.faceCard, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Tiêu đề
+    lv_obj_t* title = label(
+        ui.faceCard,
+        &hmi_font_12_sb,
+        accent(),
+        "FACE DETECTION"
+    );
+    lv_obj_set_pos(title, 0, 0);
+
+    // Tên người
+    ui.faceName = label(
+        ui.faceCard,
+        &hmi_font_16_sb,
+        text(),
+        "Đã nhận diện: Hien"
+    );
+    lv_obj_set_pos(ui.faceName, 0, 24);
+    lv_obj_set_width(ui.faceName, 380);
+    lv_label_set_long_mode(ui.faceName, LV_LABEL_LONG_DOT);
+
+    // Độ tin cậy
+    ui.faceScore = label(
+        ui.faceCard,
+        &hmi_font_13_r,
+        muted(),
+        "Độ tin cậy: 98%"
+    );
+    lv_obj_set_pos(ui.faceScore, 0, 52);
+
+    // Ban đầu chưa có sự kiện nên ẩn
+    lv_obj_add_flag(ui.faceCard, LV_OBJ_FLAG_HIDDEN);
+}
+
 lv_obj_t* makePage(lv_obj_t* scr, uint8_t page) {
     lv_obj_t* p = box(scr);
     lv_obj_set_pos(p, 0, page == P_HOME ? kContentY : page >= P_WIFI ? kSubY : kTabY);
@@ -546,6 +604,32 @@ void applyPrimary(const Model& m) {
         }
     }
     animateTo(p.value);
+}
+
+void applyFaceDetection(const Model& m) {
+    if (!ui.faceCard) return;
+
+    if (!m.face.recognized || !m.face.person[0]) {
+        lv_obj_add_flag(ui.faceCard, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    lv_label_set_text_fmt(
+        ui.faceName,
+        "Đã nhận diện: %s",
+        m.face.person
+    );
+
+    lv_label_set_text_fmt(
+        ui.faceScore,
+        "Độ tin cậy: %.0f%%",
+        m.face.score * 100.0f
+    );
+
+    lv_obj_remove_flag(
+        ui.faceCard,
+        LV_OBJ_FLAG_HIDDEN
+    );
 }
 
 void applyMetrics(const Model& m) {
@@ -2995,6 +3079,7 @@ void buildAll() {
     for (uint8_t p = P_CONTROL; p < P_COUNT; p++) lv_obj_add_flag(ui.page[p], LV_OBJ_FLAG_HIDDEN);
     buildHeader(scr);
     buildNav(scr);
+    buildFaceNotification(scr); 
     buildSheet(scr);
     buildUpdateOverlay(scr);
     buildSaver(scr);
@@ -3105,6 +3190,17 @@ void tick() {
     const Model& m = s_snap;
     if (d & D_PRIMARY) applyPrimary(m);
     if (d & D_METRICS) applyMetrics(m);
+    if (d & D_FACE) applyFaceDetection(m);
+    // Tự ẩn thông báo sau 10 giây
+    if (ui.faceCard &&
+        !lv_obj_has_flag(ui.faceCard, LV_OBJ_FLAG_HIDDEN) &&
+        (uint32_t)(millis() - m.face.detectedAt) >= 10000u) {
+
+        lv_obj_add_flag(
+            ui.faceCard,
+            LV_OBJ_FLAG_HIDDEN
+        );
+    }
     if (d & D_LINK) applyLink(m);
     if (d & D_CLOCK) {
         lv_label_set_text(ui.clock, m.clock);

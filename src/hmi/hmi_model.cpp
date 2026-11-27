@@ -7,6 +7,8 @@
 
 #include <new>
 
+#include <Arduino.h>
+
 namespace hmi {
 
 namespace {
@@ -192,6 +194,23 @@ void setSystemInfo(const SystemInfo& info) {
     Model& m = model();
     m.sys = info;  // the net task already rate-limits this to every 5 s
     m.dirty |= D_SYSTEM;
+}
+
+void setFaceDetection(const char* person, bool recognized, float score) {
+    ModelLock lock;
+    Model& m = model();
+
+    strlcpy(
+        m.face.person,
+        person ? person : "",
+        sizeof(m.face.person)
+    );
+
+    m.face.recognized = recognized;
+    m.face.score = score;
+    m.face.detectedAt = millis();
+
+    m.dirty |= D_FACE;
 }
 
 }  // namespace hmi

@@ -61,11 +61,13 @@ enum class AppCmd : uint8_t {
     RelaySet,
     EspNowLightToggle,
     EspNowLightConfirmed,
+    EspNowLightOffline,
     Sensors,
     SensorPreview,
     SaveBrightness,
     SaveAutoDim,
-    SaveTheme
+    SaveTheme,
+    FaceDetected
 };
 struct AppMsg {
     AppCmd cmd;
@@ -151,15 +153,21 @@ void appTask(void*) {
         if (xQueueReceive(g_appQ, &m, pdMS_TO_TICKS(100)) == pdTRUE) {
             switch (m.cmd) {    
                 case AppCmd::EspNowLightConfirmed:
-                // Chỉ cập nhật model giao diện sau ACK hợp lệ.
-                // Không điều khiển GPIO relay vật lý.
-                hmi::setRelay(0, m.flag);
+                    // Chỉ cập nhật model giao diện sau ACK hợp lệ.
+                    // Không điều khiển GPIO relay vật lý.
+                    hmi::setRelay(0, m.flag);
 
-                Serial.printf(
-                    "[ESP-NOW] Light UI confirmed: %s\n",
-                    m.flag ? "ON" : "OFF"
-                );
-                break;
+                    Serial.printf(
+                        "[ESP-NOW] Light UI confirmed: %s\n",
+                        m.flag ? "ON" : "OFF"
+                    );
+                    break;
+                case AppCmd::EspNowLightOffline:
+                    // Không thay đổi trạng thái ON/OFF đã xác nhận.
+                    Serial.println(
+                        "[ESP-NOW] Light UI: Device 6 not responding"
+                    );
+                    break;
                 case AppCmd::EspNowLightToggle: {
                     NetMsg msg{};
                     msg.cmd = NetCmd::EspNowLightToggle;
@@ -196,6 +204,15 @@ void appTask(void*) {
                 case AppCmd::SaveBrightness: g_prefs.putUChar("bright", m.index); break;
                 case AppCmd::SaveAutoDim: g_prefs.putBool("autodim", m.flag); break;
                 case AppCmd::SaveTheme: g_prefs.putUChar("theme", m.index); break;
+                case AppCmd::FaceDetected: {
+                    Serial.printf(
+                        "[APP] Face event: person=%s, recognized=%d, score=%.3f\n",
+                        m.text,
+                        m.flag,
+                        m.v[0]
+                    );
+                    break;
+                }
             }
         }
 
@@ -228,6 +245,39 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.printf("MQTT [%s]: %.*s\n", topic, length, (const char*)payload);
     JsonDocument doc;
     if (deserializeJson(doc, payload, length)) return;
+
+    // FaceDetection: nhận Shared Attributes từ Core IoT
+    if (strcmp(topic, "v1/devices/me/attributes") == 0) {
+
+        const char* event = doc["face_event"] | "";
+
+        if (strcmp(event, "HIEN_DETECTED") == 0) {
+
+            const char* person = doc["person"] | "Unknown";
+            bool recognized = doc["recognized"] | false;
+            float score = doc["score"] | 0.0f;
+
+            Serial.printf(
+                "[FACE] Person=%s, recognized=%d, score=%.3f\n",
+                person,
+                recognized,
+                score
+            );
+
+            AppMsg m{};
+            m.cmd = AppCmd::FaceDetected;
+            m.index = doc["face_count"] | 0;
+            m.flag = recognized;
+            m.v[0] = score;
+            m.v[1] = doc["track_id"] | 0;
+
+            snprintf(m.text, sizeof(m.text), "%s", person);
+
+            postApp(m);
+        }
+
+        return;
+    }
 
     // Nhận lệnh RPC từ CoreIoT
     const char* rpcPrefix = "v1/devices/me/rpc/request/";
@@ -410,6 +460,7 @@ void maintainMqtt(uint32_t now) {
         g_mqtt.subscribe(MQTT_TOPIC_SENSOR);
         g_mqtt.publish(MQTT_TOPIC_AVAILABILITY, "online", true);
         g_mqtt.subscribe("v1/devices/me/rpc/request/+");
+        g_mqtt.subscribe("v1/devices/me/attributes");
         publishState();
         retryDelay = MQTT_RECONNECT_INTERVAL;
     } else {
@@ -622,7 +673,24 @@ void netTask(void*) {
                         Serial.println("[ESP-NOW] App queue full");
                     }
                 }
+                // Chỉ gửi thông báo một lần khi trạng thái
+                // chuyển sang OFFLINE, tránh spam App Queue.
+                if (info.status == EspNowManager::DeviceStatus::OFFLINE &&
+                    lastStatus != EspNowManager::DeviceStatus::OFFLINE) {
 
+                    AppMsg msg{};
+                    msg.cmd = AppCmd::EspNowLightOffline;
+
+                    if (xQueueSend(g_appQ, &msg, 0) == pdTRUE) {
+                        Serial.println(
+                            "[ESP-NOW] Sending OFFLINE event to App Task"
+                        );
+                    } else {
+                        Serial.println(
+                            "[ESP-NOW] App queue full: OFFLINE event"
+                        );
+                    }
+                }
                 lastStatus = info.status;
             }
         }
@@ -830,6 +898,8 @@ uint8_t deviceList(hmi::DeviceInfo* out) {
 void setup() {
     Serial.begin(SERIAL_BAUDRATE);
     delay(100);
+    Serial.print("[NSPanel] WiFi STA MAC: ");
+    Serial.println(WiFi.macAddress());
     Serial.println("\n\n=== ESP32-4848S040 Smart Home Panel ===");
     Serial.printf("Firmware: %s  Hardware: %s\n", FIRMWARE_VERSION, HARDWARE_VERSION);
     Serial.printf("Reset reason: %d\n", (int)esp_reset_reason());  // 1=power-on/EN, 4=panic, 6/7=watchdog, 9=brownout

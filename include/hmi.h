@@ -155,6 +155,11 @@ void setAutoDim(bool on);
 void setTheme(uint8_t index);  // colour palette: 0 Lime, 1 Ember, 2 Cobalt
 void setSystemInfo(const SystemInfo& info);
 void setRoomName(const char* name);  // header title (default HMI_ROOM_NAME)
+void setFaceDetection(
+    const char* person,
+    bool recognized,
+    float score
+);
 
 void setWifiNetworks(const WifiNetwork* list, uint8_t count);  // scan result
 void setWifiScanning(bool scanning);
